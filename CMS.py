@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import numpy as np
 import plotly.graph_objects as go
-from datetime import datetime
+
 
 # Function to load default data
 @st.cache_data
@@ -1436,29 +1436,59 @@ elif selected_analysis == "Strategic Insights":
 
         # Convert 'Date' column to datetime (adjust column name if needed)
         data['Date'] = pd.to_datetime(data['Date'])
+
         # Sidebar: Interval Selection (Day, Month, or Year)
         interval = st.radio("Select Interval:", ["Day", "Month", "Year"])
+
         # Group data based on the selected interval
         if interval == "Day":
             data['Interval'] = data['Date'].dt.date
+            violation_threshold = 20  # Day threshold for violation
+            compliance_threshold = 80  # Day threshold for compliance
         elif interval == "Month":
             data['Interval'] = data['Date'].dt.to_period('M').astype(str)
+            violation_threshold = 30  # Month threshold for violation
+            compliance_threshold = 70  # Month threshold for compliance
         else:
             data['Interval'] = data['Date'].dt.year
+            violation_threshold = 60  # Year threshold for violation
+            compliance_threshold = 40  # Year threshold for compliance
+
+        # Filtering the data based on selections and date range
+        filtered_data = data[
+            (data['Date'] >= pd.to_datetime(start_date)) &
+            (data['Date'] <= pd.to_datetime(end_date)) &
+            (data['Employee_Name'].isin(employee) if employee else True) &
+            (data['Shift'].isin(shift) if shift else True) &
+            (data['Factory'].isin(factory) if factory else True) &
+            (data['Department'].isin(department) if department else True) &
+            (data['Camera'].isin(camera) if camera else True) &
+            (data['Violation_Type'].isin(violation_type) if violation_type else True)
+            ]
 
         # Filter the data based on the analysis type
         if analysis_type == "Violation":
-            filtered_data = data[data['Violation_Type'] != 'Compliant']
+            filtered_data = filtered_data[filtered_data['Violation_Type'] != 'Compliant']
         else:
-            filtered_data = data[data['Violation_Type'] == 'Compliant']
-
+            filtered_data = filtered_data[filtered_data['Violation_Type'] == 'Compliant']
 
         total_counts = filtered_data.shape[0]  # Total number of entries in filtered_data
 
+        # Ensure the 'Interval' column was created
+        if 'Interval' not in filtered_data.columns:
+            st.error("Interval column creation failed. Please check the date format.")
+            st.stop()
 
-        grouped_data = (
-            filtered_data.groupby(['Interval', 'Factory', 'Department', 'Shift']).size().reset_index(name='Count')
-        )
+        # Group data by 'Interval', 'Factory', 'Department', and 'Shift'
+        try:
+            grouped_data = (
+                filtered_data.groupby(['Interval', 'Factory', 'Department', 'Shift'])
+                .size()
+                .reset_index(name='Count')
+            )
+        except KeyError as e:
+            st.error(f"KeyError: {e}. Please ensure all necessary columns are available.")
+            st.stop()
 
         # Check if 'Count' is numeric and convert to numeric type
         grouped_data['Count'] = pd.to_numeric(grouped_data['Count'], errors='coerce')
@@ -1473,17 +1503,11 @@ elif selected_analysis == "Strategic Insights":
         grouped_data['Growth Rate'] = grouped_data.groupby(['Factory', 'Department', 'Shift'])[
             'Current Rate'].diff().fillna(0)
 
-
         # Display the growth tracker table
-        st.subheader(f"Growth Tracker Insights - {analysis_type} By Units ")
+        st.subheader(f"Growth Tracker Insights - {analysis_type} By Units")
         st.dataframe(grouped_data)
 
         # Filter data for compliant or violation checks
-        if analysis_type == "Violation":
-            filtered_data = data[data['Violation_Type'] != 'Compliant']
-        else:
-            filtered_data = data[data['Violation_Type'] == 'Compliant']
-
         interval_counts = filtered_data.groupby('Interval').size().reset_index(name='Filtered Count')
 
         # Group by 'Interval' for the total counts (if necessary, else use len(data))
@@ -1501,14 +1525,12 @@ elif selected_analysis == "Strategic Insights":
         # Calculate growth between intervals
         interval_rate['Growth Rate'] = interval_rate['Current Rate'].diff().fillna(0)
 
-
-
         # Calculate total growth
         total_growth = interval_rate['Growth Rate'].sum()
         trend_message = f"Overall {analysis_type} Growth: {total_growth:.2f}% over selected period."
 
         # Display growth tracker insights
-        st.subheader(f"Growth Tracker Insights - {analysis_type}  Over All")
+        st.subheader(f"Growth Tracker Insights - {analysis_type} Over All")
         st.dataframe(interval_rate)
 
         # Plot the growth rate chart
@@ -1532,6 +1554,86 @@ elif selected_analysis == "Strategic Insights":
         # Display the chart
         st.plotly_chart(fig_growth, use_container_width=True)
 
+        # Risk Radar Insights
+        if selected_insight == "Risk Radar Insights":
+            # Sidebar: Interval Selection (Day, Month, or Year)
+            interval = st.radio("Select Interval:", ["Day", "Month", "Year"])
+
+            # Group data based on the selected interval
+            if interval == "Day":
+                data['Interval'] = data['Date'].dt.date
+                violation_threshold = 20  # Day threshold for violation
+                compliance_threshold = 80  # Day threshold for compliance
+            elif interval == "Month":
+                data['Interval'] = data['Date'].dt.to_period('M').astype(str)
+                violation_threshold = 30  # Month threshold for violation
+                compliance_threshold = 70  # Month threshold for compliance
+            else:
+                data['Interval'] = data['Date'].dt.year
+                violation_threshold = 60  # Year threshold for violation
+                compliance_threshold = 40  # Year threshold for compliance
+
+            # Calculate total counts and filtered counts per interval
+            interval_counts = filtered_data.groupby('Interval').size().reset_index(name='Filtered Count')
+            total_counts = data.groupby('Interval').size().reset_index(name='Total Count')
+
+            # Merge counts to calculate the Current Rate
+            interval_rate = pd.merge(interval_counts, total_counts, on='Interval', how='outer')
+            interval_rate['Current Rate'] = (interval_rate['Filtered Count'] / interval_rate['Total Count']) * 100
+            interval_rate['Current Rate'] = interval_rate['Current Rate'].fillna(0)  # Fill NaN with 0
+
+            # Calculate Growth Rate between intervals
+            interval_rate['Growth Rate'] = interval_rate['Current Rate'].diff().fillna(0)
+
+
+            # Determine dot color based on the threshold logic
+            def get_dot_color(growth):
+                if analysis_type == "Violation":
+                    if (interval == "Day" and growth > violation_threshold) or \
+                            (interval == "Month" and growth > violation_threshold) or \
+                            (interval == "Year" and growth > violation_threshold):
+                        return 'red'
+                else:  # Compliance
+                    if (interval == "Day" and growth < compliance_threshold) or \
+                            (interval == "Month" and growth < compliance_threshold) or \
+                            (interval == "Year" and growth < compliance_threshold):
+                        return 'red'
+                return 'green'
+
+
+            # Apply the color logic to each interval's growth rate
+            interval_rate['Dot Color'] = interval_rate['Growth Rate'].apply(get_dot_color)
+
+            # Display growth tracker insights
+            st.subheader(f"Growth Tracker Insights - {analysis_type} Over All")
+            st.dataframe(interval_rate)
+
+            # Plot the growth rate line chart with colored dots
+            fig_growth = px.line(
+                interval_rate,
+                x='Interval',
+                y='Current Rate',
+                title=f"{analysis_type} Rate Over Time ({interval}-wise)",
+                labels={'Current Rate': f'{analysis_type} Rate (%)'},
+                markers=True
+            )
+
+            # Add colored markers (dots) based on growth rate thresholds
+            fig_growth.update_traces(
+                marker=dict(size=10),
+                marker_color=interval_rate['Dot Color']
+            )
+
+            # Update layout for better visualization
+            fig_growth.update_layout(
+                xaxis_title=f"{interval}",
+                yaxis_title=f"{analysis_type} Rate (%)",
+                yaxis=dict(range=[0, 100])  # Y-axis range from 0 to 100%
+            )
+
+            # Display the chart
+            st.plotly_chart(fig_growth, use_container_width=True)
+
 
     # Risk Radar Insights
     elif selected_insight == "Risk Radar Insights":
@@ -1554,12 +1656,22 @@ elif selected_analysis == "Strategic Insights":
             data['Interval'] = data['Date'].dt.year
             violation_threshold = 60  # Year threshold for violation
             compliance_threshold = 40  # Year threshold for compliance
+        filtered_data = data[
+            (data['Date'] >= pd.to_datetime(start_date)) &
+            (data['Date'] <= pd.to_datetime(end_date)) &
+            (data['Employee_Name'].isin(employee) if employee else True) &
+            (data['Shift'].isin(shift) if shift else True) &
+            (data['Factory'].isin(factory) if factory else True) &
+            (data['Department'].isin(department) if department else True) &
+            (data['Camera'].isin(camera) if camera else True) &
+            (data['Violation_Type'].isin(violation_type) if violation_type else True)
+            ]
 
         # Filter the data based on the analysis type
         if analysis_type == "Violation":
-            filtered_data = data[data['Violation_Type'] != 'Compliant']
+            filtered_data = filtered_data[data['Violation_Type'] != 'Compliant']
         else:
-            filtered_data = data[data['Violation_Type'] == 'Compliant']
+            filtered_data = filtered_data[data['Violation_Type'] == 'Compliant']
 
         # Calculate total counts and filtered counts per interval
         interval_counts = filtered_data.groupby('Interval').size().reset_index(name='Filtered Count')
